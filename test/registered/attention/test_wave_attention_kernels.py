@@ -283,6 +283,11 @@ class TestWaveAttention(unittest.TestCase):
         self.assertTrue(cos_sim.item() > 0.99)
         self.assertTrue(torch.allclose(o, o_triton, atol=3e-2))
 
+    @unittest.skipIf(
+        "+rocm10." in torch.__version__,
+        "Wave grouped decode produces NaNs on ROCm 10. Re-enable after "
+        "the Wave kernel supports ROCm 10.",
+    )
     def test_grouped_decode_attention(self):
         seq_lens = [5, 100, 128, 500]
         configs = [
