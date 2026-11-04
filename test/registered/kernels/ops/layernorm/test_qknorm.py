@@ -6,11 +6,12 @@ import torch
 import triton
 
 from sglang.kernels.jit.utils import get_ci_test_range
-from sglang.test.ci.ci_register import register_cuda_ci
+from sglang.test.ci.ci_register import register_amd_ci, register_cuda_ci
 
 register_cuda_ci(est_time=37, stage="base-b-kernel-unit", runner_config="1-gpu-large")
 # Nightly is not redundant here: it sets SGLANG_JIT_KERNEL_RUN_FULL_TESTS=1 to expand get_ci_test_range sweeps.
 register_cuda_ci(est_time=130, stage="nightly", runner_config="1-gpu-large")
+register_amd_ci(est_time=40, stage="jit-kernel-unit", runner_config="amd")
 
 
 def sglang_aot_qknorm(
@@ -26,6 +27,26 @@ def sglang_aot_qknorm(
     k = k.view(-1, head_dim)
     rmsnorm(q, q_weight, out=q)
     rmsnorm(k, k_weight, out=k)
+
+
+def torch_qknorm(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    q_weight: torch.Tensor,
+    k_weight: torch.Tensor,
+    eps: float = 1e-6,
+) -> None:
+    for x, weight in ((q, q_weight), (k, k_weight)):
+        x32 = x.float()
+        x.copy_(
+            x32
+            * torch.rsqrt(x32.pow(2).mean(dim=-1, keepdim=True) + eps)
+            * weight.float()
+        )
+
+
+# The ROCm sgl-kernel wheel builds no rmsnorm, so on ROCm the JIT kernel is checked against torch.
+reference_qknorm = torch_qknorm if torch.version.hip else sglang_aot_qknorm
 
 
 def sglang_jit_qknorm(
@@ -76,7 +97,7 @@ def test_qknorm(batch_size: int, n_k: int, n_q: int, head_dim: int) -> None:
     k_weight = torch.randn(head_dim, device=DEVICE, dtype=DTYPE)
     q_k_aot = (q.clone(), k.clone())
     q_k_jit = (q.clone(), k.clone())
-    sglang_aot_qknorm(q_k_aot[0], q_k_aot[1], q_weight, k_weight)
+    reference_qknorm(q_k_aot[0], q_k_aot[1], q_weight, k_weight)
     sglang_jit_qknorm(q_k_jit[0], q_k_jit[1], q_weight, k_weight)
     triton.testing.assert_close(q_k_aot[0], q_k_jit[0], atol=1e-2, rtol=1e-2)
     triton.testing.assert_close(q_k_aot[1], q_k_jit[1], atol=1e-2, rtol=1e-2)
